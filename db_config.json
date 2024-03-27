@@ -1,0 +1,8 @@
+{
+    "server": "192.168.200.66",
+    "database": "test1",
+    "username": "sa",
+    "password": "123qwe,.",
+    "port": "1639",
+    "table": ""
+}
