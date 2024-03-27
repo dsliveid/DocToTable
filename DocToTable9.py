@@ -103,6 +103,11 @@ def open_docx():
         sql_output = ""  # Store all the SQL statements here
         for table in doc.tables:
             table_comment = get_table_preceding_paragraph(table)
+            # 截取空格后面的内容，1表示只分割一次
+            split_comment = table_comment.split(' ', 1)
+            if len(split_comment) > 1:
+                table_comment = split_comment[1]
+
             sql_output += analyze_table(table, table_comment) + "\n\n"
 
         text_area.delete('1.0', tk.END)
@@ -169,7 +174,7 @@ def fetch_table_structure(server, database, username, password, port, table):
         query = """
                 SELECT 
                     t.TABLE_NAME,
-                    t.TABLE_TYPE,
+                    CONVERT(varchar(100),row_number() over(order by t.TABLE_NAME)) AS Num,
                     CONVERT(VARCHAR(MAX), ep.value) AS TABLE_COMMENT
                 FROM 
                     INFORMATION_SCHEMA.TABLES t
@@ -189,8 +194,8 @@ def fetch_table_structure(server, database, username, password, port, table):
         tables = cursor.fetchall()
 
         doc = Document()
-        for table_name, table_type, table_comment in tables:
-            doc.add_heading(f"{table_comment}", level=2)  # 表名作为二级标题
+        for table_name, Num, table_comment in tables:
+            doc.add_heading(f"{Num}. {table_comment}", level=2)  # 表名作为二级标题
             query = """
                 SELECT 
                     IC.COLUMN_NAME, 
