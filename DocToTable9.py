@@ -70,18 +70,26 @@ def analyze_table(table, table_comment):
     return table_sql + "\n" + comment_sql + "\n" + "\n".join(column_comments) + "\nend"
 
 
+def get_text_from_elem(elem):
+    text = []
+    for child in elem.iterchildren():
+        if child.tag == qn('w:r'):  # 查找包含文本的r元素
+            for subchild in child.iterchildren():
+                if subchild.tag == qn('w:t'):
+                    t_text = subchild.text
+                    if t_text:
+                        text.append(t_text)
+    return ''.join(text)
+
+
 def get_table_preceding_paragraph(table):
     tbl_element = table._element
     prev_element = tbl_element.getprevious()
 
-    if prev_element is not None and prev_element.tag.endswith('p'):
-        return prev_element.text
-    else:
-        # 找到真正的文本段落
-        while prev_element is not None and not prev_element.tag.endswith('p'):
-            prev_element = prev_element.getprevious()
-        if prev_element is not None:
-            return prev_element.text
+    while prev_element is not None:
+        if prev_element.tag == qn('w:p'):
+            return get_text_from_elem(prev_element)
+        prev_element = prev_element.getprevious()
     return ""  # 如果之前没有段落，则返回空字符串
 
 
