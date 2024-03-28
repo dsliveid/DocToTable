@@ -20,6 +20,10 @@ pip install pyodbc
 
 pip install pyinstaller
 
+pip install Pillow
+
+pip install tqdm
+
 
 ### 打包命令
 pyinstaller --onefile .\DocToTable.py

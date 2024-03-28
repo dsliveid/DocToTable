@@ -1,13 +1,16 @@
 import json
 import os
+import threading
 import tkinter as tk
-from tkinter import filedialog, scrolledtext, messagebox, simpledialog
+from tkinter import filedialog, scrolledtext, messagebox, simpledialog, ttk
 
 import pyodbc
 from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from tqdm.auto import tqdm
 
+# 定义配置文件路径
 json_file_name = "DocToTable_Config.json"
 
 
@@ -16,6 +19,8 @@ def analyze_table(table, table_comment):
     columns_definitions = []
     newline = ",\n    "
     primary_keys = []
+    # 处理特殊符号
+    table_comment = table_comment.replace("'", "''")
 
     # 解析SQL表和列定义
     for i, row in enumerate(table.rows):
@@ -63,6 +68,7 @@ def analyze_table(table, table_comment):
     for i in range(2, number_of_columns + 2):
         column_name = table.cell(i, 1).text.strip()
         column_comment = table.cell(i, 6).text.strip()
+        column_comment = column_comment.replace("'", "''")
         if column_comment:
             comment_statement = f"EXEC sys.sp_addextendedproperty @name=N'MS_Description', @value=N'{column_comment}', @level0type=N'Schema', @level0name=N'dbo', @level1type=N'Table', @level1name=N'{table_name}', @level2type=N'Column', @level2name=N'{column_name}'; "
             column_comments.append(comment_statement)
@@ -97,11 +103,16 @@ def open_docx():
     file_path = filedialog.askopenfilename(filetypes=[("Word files", "*.docx"), ("All files", "*.*")])
     if not file_path:
         return
+    else:
+        open_progressbar_window2(parse_docx, file_path)
 
+
+def parse_docx(progressbar, newWindow, file_path):
     try:
         doc = Document(file_path)
         sql_output = ""  # Store all the SQL statements here
-        for table in doc.tables:
+        tables = doc.tables
+        for i, table in enumerate(tables):
             table_comment = get_table_preceding_paragraph(table)
             # 截取空格后面的内容，1表示只分割一次
             split_comment = table_comment.split(' ', 1)
@@ -110,9 +121,14 @@ def open_docx():
 
             sql_output += analyze_table(table, table_comment) + "\n\n"
 
+            progress = int(i) / len(tables) * 100
+            progressbar['value'] = progress  # 更新进度条的值
+            newWindow.update_idletasks()  # 刷新界面
+        newWindow.destroy()  # 任务完成后关闭窗口
         text_area.delete('1.0', tk.END)
         text_area.insert(tk.INSERT, sql_output)
     except Exception as e:
+        newWindow.destroy()  # 异常时销毁窗口
         text_area.delete('1.0', tk.END)
         text_area.insert(tk.INSERT, f'Error: {e}')
 
@@ -164,10 +180,11 @@ border_kwargs = {
 }
 
 
-def fetch_table_structure(server, database, username, password, port, table):
+def fetch_table_structure(server, database, username, password, port, table, progressbar, newWindow):
     """连接数据库并获取表结构的函数。"""
     try:
-        connection_string = f'DRIVER={{SQL Server}};SERVER={server},{port};DATABASE={database};UID={username};PWD={password}'
+        server = server + "," + port if port is not None and len(port) > 0 else server
+        connection_string = f'DRIVER={{SQL Server}};SERVER={server};DATABASE={database};UID={username};PWD={password}'
         conn = pyodbc.connect(connection_string)
         cursor = conn.cursor()
 
@@ -193,89 +210,123 @@ def fetch_table_structure(server, database, username, password, port, table):
 
         tables = cursor.fetchall()
 
-        doc = Document()
-        for table_name, Num, table_comment in tables:
-            table_comment = table_comment if table_comment is not None and len(table_comment) > 0 else table_name
-            doc.add_heading(f"{Num}. {table_comment}", level=2)  # 表名作为二级标题
-            query = """
-                SELECT 
-                    IC.COLUMN_NAME, 
-                    IC.DATA_TYPE, 
-                    IC.CHARACTER_MAXIMUM_LENGTH, 
-                    IC.COLUMN_DEFAULT, 
-                    IC.IS_NULLABLE,
-                    CONVERT(VARCHAR(MAX), EP.value) AS COLUMN_COMMENT,
-                    CASE WHEN PK.COLUMN_NAME IS NOT NULL THEN 'Yes' ELSE 'No' END AS IS_PRIMARY_KEY
-                FROM 
-                    INFORMATION_SCHEMA.COLUMNS AS IC
-                LEFT JOIN 
-                    sys.columns AS SC
-                    ON IC.COLUMN_NAME = SC.name AND OBJECT_NAME(SC.object_id) = IC.TABLE_NAME
-                LEFT JOIN 
-                    sys.extended_properties AS EP
-                    ON EP.major_id = SC.object_id AND EP.minor_id = SC.column_id AND EP.name = 'MS_Description'
-                LEFT JOIN 
-                    (SELECT 
-                        KCU.TABLE_NAME, 
-                        KCU.COLUMN_NAME 
+        # 设置进度条
+        with tqdm(total=len(tables), desc="Processing") as pbar:
+            doc = Document()
+            for table_name, Num, table_comment in tables:
+                table_comment = table_comment if table_comment is not None and len(table_comment) > 0 else table_name
+                doc.add_heading(f"{Num}. {table_comment}", level=2)  # 表名作为二级标题
+                query = """
+                    SELECT 
+                        IC.COLUMN_NAME, 
+                        IC.DATA_TYPE, 
+                        CASE
+                            WHEN IC.DATA_TYPE IN ('char', 'varchar', 'nchar', 'nvarchar', 'binary', 'varbinary')
+                                THEN IC.CHARACTER_MAXIMUM_LENGTH
+                            ELSE NULL 
+                        END AS CHARACTER_MAXIMUM_LENGTH, 
+                        CASE
+                            WHEN IC.DATA_TYPE IN ('decimal', 'numeric', 'smallmoney', 'money', 'float', 'real')
+                                THEN IC.NUMERIC_PRECISION
+                            WHEN IC.DATA_TYPE IN ('int', 'smallint', 'tinyint', 'bigint')
+                                THEN IC.DATETIME_PRECISION
+                            WHEN IC.DATA_TYPE LIKE 'datetime2%'
+                                THEN IC.DATETIME_PRECISION
+                            ELSE NULL
+                        END AS NUMERIC_PRECISION,
+                        CASE
+                            WHEN IC.DATA_TYPE IN ('decimal', 'numeric')
+                                THEN IC.NUMERIC_SCALE
+                            ELSE NULL 
+                        END AS NUMERIC_SCALE,
+                        IC.COLUMN_DEFAULT, 
+                        IC.IS_NULLABLE,
+                        CONVERT(VARCHAR(MAX), EP.value) AS COLUMN_COMMENT,
+                        CASE WHEN PK.COLUMN_NAME IS NOT NULL THEN 'Yes' ELSE 'No' END AS IS_PRIMARY_KEY
                     FROM 
-                        INFORMATION_SCHEMA.KEY_COLUMN_USAGE AS KCU
-                    JOIN 
-                        INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS TC
-                    ON KCU.CONSTRAINT_NAME = TC.CONSTRAINT_NAME
-                    WHERE TC.CONSTRAINT_TYPE = 'PRIMARY KEY') AS PK
-                    ON IC.TABLE_NAME = PK.TABLE_NAME AND IC.COLUMN_NAME = PK.COLUMN_NAME
-                WHERE 
-                    IC.TABLE_NAME = ?
-                    """
-            # 参数化查询以确保安全
-            cursor.execute(query, (table_name,))
-            columns = cursor.fetchall()
+                        INFORMATION_SCHEMA.COLUMNS AS IC
+                    LEFT JOIN 
+                        sys.columns AS SC
+                        ON IC.COLUMN_NAME = SC.name AND OBJECT_NAME(SC.object_id) = IC.TABLE_NAME
+                    LEFT JOIN 
+                        sys.extended_properties AS EP
+                        ON EP.major_id = SC.object_id AND EP.minor_id = SC.column_id AND EP.name = 'MS_Description'
+                    LEFT JOIN 
+                        (SELECT 
+                            KCU.TABLE_NAME, 
+                            KCU.COLUMN_NAME 
+                        FROM 
+                            INFORMATION_SCHEMA.KEY_COLUMN_USAGE AS KCU
+                        JOIN 
+                            INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS TC
+                        ON KCU.CONSTRAINT_NAME = TC.CONSTRAINT_NAME
+                        WHERE TC.CONSTRAINT_TYPE = 'PRIMARY KEY') AS PK
+                        ON IC.TABLE_NAME = PK.TABLE_NAME AND IC.COLUMN_NAME = PK.COLUMN_NAME
+                    WHERE 
+                        IC.TABLE_NAME = ?
+                        """
+                # 参数化查询以确保安全
+                cursor.execute(query, (table_name,))
+                columns = cursor.fetchall()
 
-            t = doc.add_table(rows=len(columns) + 2, cols=7)
-            # 遍历表格并应用边框
-            for row in t.rows:
-                for cell in row.cells:
-                    # 为每个单元格分别设置所有四个边框和内部边框
-                    set_cell_border(cell,
-                                    left=border_kwargs,
-                                    right=border_kwargs,
-                                    top=border_kwargs,
-                                    bottom=border_kwargs,
-                                    insideH=border_kwargs,
-                                    insideV=border_kwargs)
+                t = doc.add_table(rows=len(columns) + 2, cols=7)
+                # 遍历表格并应用边框
+                for row in t.rows:
+                    for cell in row.cells:
+                        # 为每个单元格分别设置所有四个边框和内部边框
+                        set_cell_border(cell,
+                                        left=border_kwargs,
+                                        right=border_kwargs,
+                                        top=border_kwargs,
+                                        bottom=border_kwargs,
+                                        insideH=border_kwargs,
+                                        insideV=border_kwargs)
 
-            t.cell(0, 0).text = '表名'
-            t.cell(0, 1).merge(t.cell(0, 2)).text = table_name
-            t.cell(0, 3).merge(t.cell(0, 4)).merge(t.cell(0, 5)).text = '所属数据库'
-            t.cell(0, 6).text = database
+                t.cell(0, 0).text = '表名'
+                t.cell(0, 1).merge(t.cell(0, 2)).text = table_name
+                t.cell(0, 3).merge(t.cell(0, 4)).merge(t.cell(0, 5)).text = '所属数据库'
+                t.cell(0, 6).text = database
 
-            t.cell(1, 0).text = '序号'
-            t.cell(1, 1).text = '字段名'
-            t.cell(1, 2).text = '字段类型'
-            t.cell(1, 3).text = '非空'
-            t.cell(1, 4).text = '键'
-            t.cell(1, 5).text = '默认值'
-            t.cell(1, 6).text = '字段说明'
+                t.cell(1, 0).text = '序号'
+                t.cell(1, 1).text = '字段名'
+                t.cell(1, 2).text = '字段类型'
+                t.cell(1, 3).text = '非空'
+                t.cell(1, 4).text = '键'
+                t.cell(1, 5).text = '默认值'
+                t.cell(1, 6).text = '字段说明'
 
-            for i, column in enumerate(columns):
-                row = t.rows[i + 2]
-                row.cells[0].text = str(i + 1)
-                row.cells[1].text = column.COLUMN_NAME
-                column_type = column.DATA_TYPE
-                if column.CHARACTER_MAXIMUM_LENGTH:
-                    column_type += f" ({column.CHARACTER_MAXIMUM_LENGTH})"
-                row.cells[2].text = column_type
-                IS_NULLABLE = str(column.IS_NULLABLE)
-                row.cells[3].text = '是' if IS_NULLABLE == 'NO' else ''
-                IS_PRIMARY_KEY = str(column.IS_PRIMARY_KEY)
-                row.cells[4].text = '主键' if IS_PRIMARY_KEY == 'Yes' else ''
-                row.cells[5].text = str(column.COLUMN_DEFAULT) if column.COLUMN_DEFAULT else ''
-                row.cells[6].text = column.COLUMN_COMMENT if column.COLUMN_COMMENT else ''
+                for i, column in enumerate(columns):
+                    row = t.rows[i + 2]
+                    row.cells[0].text = str(i + 1)
+                    row.cells[1].text = column.COLUMN_NAME
+                    column_type = column.DATA_TYPE
+                    column_length = column.CHARACTER_MAXIMUM_LENGTH
 
+                    if (column_type == "nvarchar" or column_type == "varchar") and str(column_length) == "-1":
+                        column_length = "max"
+                    if column_length is None or len(str(column_length)) < 1:
+                        column_length = column.NUMERIC_PRECISION
+                    if column_type == "decimal" or column_type == "numeric":
+                        column_length = f"{column.NUMERIC_PRECISION},{column.NUMERIC_SCALE}"
+                    if column_length:
+                        column_type += f" ({column_length})"
+                    row.cells[2].text = column_type
+                    IS_NULLABLE = str(column.IS_NULLABLE)
+                    row.cells[3].text = '是' if IS_NULLABLE == 'NO' else ''
+                    IS_PRIMARY_KEY = str(column.IS_PRIMARY_KEY)
+                    row.cells[4].text = '主键' if IS_PRIMARY_KEY == 'Yes' else ''
+                    row.cells[5].text = str(column.COLUMN_DEFAULT) if column.COLUMN_DEFAULT else ''
+                    row.cells[6].text = column.COLUMN_COMMENT if column.COLUMN_COMMENT else ''
+                # 更新进度条
+                pbar.update(1)
+                progress = int(Num) / len(tables) * 100
+                progressbar['value'] = progress  # 更新进度条的值
+                newWindow.update_idletasks()  # 刷新界面
+            newWindow.destroy()  # 任务完成后关闭窗口
         return doc
 
     except Exception as e:
+        newWindow.destroy()  # 出现异常时关闭窗口
         messagebox.showerror("Error", f"Could not connect to database: {e}")
         return None
 
@@ -286,7 +337,7 @@ def update_config_json(new_config):
         json.dump(new_config, file, ensure_ascii=False, indent=4)
 
 
-def convert_to_word():
+def convert_to_word(progressbar, newWindow):
     # 从输入字段获取数据库连接信息
     server = server_entry.get()
     database = database_entry.get()
@@ -294,6 +345,22 @@ def convert_to_word():
     password = password_entry.get()
     port = port_entry.get()
     table = table_entry.get()
+    if server is None or len(server) < 1:
+        messagebox.showerror("Error", "数据库链接地址server不能为空")
+        newWindow.destroy()
+        return
+    if database is None or len(database) < 1:
+        messagebox.showerror("Error", "数据库名称database不能为空")
+        newWindow.destroy()
+        return
+    if username is None or len(username) < 1:
+        messagebox.showerror("Error", "数据库登录名username不能为空")
+        newWindow.destroy()
+        return
+    if password is None or len(password) < 1:
+        messagebox.showerror("Error", "数据库链接密码password不能为空")
+        newWindow.destroy()
+        return
 
     new_config = {
         'server': server,
@@ -305,7 +372,7 @@ def convert_to_word():
     }
     update_config_json(new_config)
 
-    doc = fetch_table_structure(server, database, username, password, port, table)
+    doc = fetch_table_structure(server, database, username, password, port, table, progressbar, newWindow)
     if doc:
         filepath = filedialog.asksaveasfilename(defaultextension=".docx")
         if filepath:
@@ -367,7 +434,30 @@ table_entry = tk.Entry(root)
 table_entry.pack()
 table_entry.insert(0, db_settings['table'])
 
-open_db_button = tk.Button(root, text="数据库表结构保存为Word文档", command=convert_to_word)
+
+def open_progressbar_window(fun):
+    newWindow = tk.Toplevel(root)
+    newWindow.title("执行进度")
+    newWindow.geometry("300x50")
+    progressbar = ttk.Progressbar(newWindow, orient=tk.HORIZONTAL, length=280, mode='determinate')
+    progressbar.pack(pady=10)
+
+    # 在单独的线程中开始任务
+    threading.Thread(target=fun, args=(progressbar, newWindow,)).start()
+
+def open_progressbar_window2(fun, param):
+    newWindow = tk.Toplevel(root)
+    newWindow.title("执行进度")
+    newWindow.geometry("300x50")
+    progressbar = ttk.Progressbar(newWindow, orient=tk.HORIZONTAL, length=280, mode='determinate')
+    progressbar.pack(pady=10)
+
+    # 在单独的线程中开始任务
+    threading.Thread(target=fun, args=(progressbar, newWindow, param,)).start()
+
+
+open_db_button = tk.Button(root, text="数据库表结构保存为Word文档",
+                           command=lambda: open_progressbar_window(convert_to_word))
 open_db_button.pack(side=tk.TOP, pady=10)
 
 text_area = scrolledtext.ScrolledText(root, wrap=tk.WORD)
