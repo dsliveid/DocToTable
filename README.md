@@ -22,4 +22,8 @@ pip install pyinstaller
 
 
 ### 打包命令
-pyinstaller --onefile .\DocToTable9.py
+pyinstaller --onefile .\DocToTable.py
+
+或者，带图标的打包
+
+pyinstaller .\DocToTable.spec

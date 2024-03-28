@@ -5,6 +5,8 @@ from tkinter import filedialog, scrolledtext, messagebox, simpledialog
 
 import pyodbc
 from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 
 def analyze_table(table, table_comment):
@@ -115,6 +117,42 @@ db_settings = {
 }
 
 
+def set_cell_border(cell, **kwargs):
+    """
+    设置单元格边框
+    """
+    tc = cell._tc
+    tcPr = tc.get_or_add_tcPr()
+
+    # 定义要设置的边缘类型
+    edges = ('left', 'right', 'top', 'bottom', 'insideH', 'insideV')
+    for edge in edges:
+        edge_data = kwargs.get(edge, {})
+        if edge_data:
+            # 设置边缘属性
+            tag = 'w:{}'.format(edge)
+            element = OxmlElement(tag)
+            element.set(qn('w:val'), edge_data.get('val', 'single'))
+            element.set(qn('w:sz'), str(edge_data.get('sz', 4)))
+            element.set(qn('w:space'), '0')
+            element.set(qn('w:color'), edge_data.get('color', '000000'))  # 边缘设为黑色
+
+            # 添加边缘到单元格的边界定义中
+            tcBorders = tcPr.first_child_found_in('w:tcBorders')
+            if tcBorders is None:
+                tcBorders = OxmlElement('w:tcBorders')
+                tcPr.append(tcBorders)
+            tcBorders.append(element)
+
+
+# 设置表格样式，所有边框都是黑色单线
+border_kwargs = {
+    'sz': 6,  # 边框粗细
+    'val': 'single',  # 边框类型为单线
+    'color': '000000',  # 边框颜色为黑色
+}
+
+
 def fetch_table_structure(server, database, username, password, port, table):
     """连接数据库并获取表结构的函数。"""
     try:
@@ -148,29 +186,65 @@ def fetch_table_structure(server, database, username, password, port, table):
         for table_name, table_type, table_comment in tables:
             doc.add_heading(f"{table_comment}", level=2)  # 表名作为二级标题
             query = """
-                    SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, COLUMN_DEFAULT, IC.IS_NULLABLE,
-                        CONVERT(VARCHAR(MAX), EP.value) AS COLUMN_COMMENT
-                    FROM INFORMATION_SCHEMA.COLUMNS AS IC
-                    LEFT JOIN sys.columns AS SC
-                        ON IC.COLUMN_NAME = SC.name AND OBJECT_NAME(SC.object_id) = IC.TABLE_NAME
-                    LEFT JOIN sys.extended_properties AS EP
-                        ON EP.major_id = SC.object_id AND EP.minor_id = SC.column_id AND EP.name = 'MS_Description'
-                    WHERE IC.TABLE_NAME = ?
-                    """  # 参数化查询以确保安全
+                SELECT 
+                    IC.COLUMN_NAME, 
+                    IC.DATA_TYPE, 
+                    IC.CHARACTER_MAXIMUM_LENGTH, 
+                    IC.COLUMN_DEFAULT, 
+                    IC.IS_NULLABLE,
+                    CONVERT(VARCHAR(MAX), EP.value) AS COLUMN_COMMENT,
+                    CASE WHEN PK.COLUMN_NAME IS NOT NULL THEN 'Yes' ELSE 'No' END AS IS_PRIMARY_KEY
+                FROM 
+                    INFORMATION_SCHEMA.COLUMNS AS IC
+                LEFT JOIN 
+                    sys.columns AS SC
+                    ON IC.COLUMN_NAME = SC.name AND OBJECT_NAME(SC.object_id) = IC.TABLE_NAME
+                LEFT JOIN 
+                    sys.extended_properties AS EP
+                    ON EP.major_id = SC.object_id AND EP.minor_id = SC.column_id AND EP.name = 'MS_Description'
+                LEFT JOIN 
+                    (SELECT 
+                        KCU.TABLE_NAME, 
+                        KCU.COLUMN_NAME 
+                    FROM 
+                        INFORMATION_SCHEMA.KEY_COLUMN_USAGE AS KCU
+                    JOIN 
+                        INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS TC
+                    ON KCU.CONSTRAINT_NAME = TC.CONSTRAINT_NAME
+                    WHERE TC.CONSTRAINT_TYPE = 'PRIMARY KEY') AS PK
+                    ON IC.TABLE_NAME = PK.TABLE_NAME AND IC.COLUMN_NAME = PK.COLUMN_NAME
+                WHERE 
+                    IC.TABLE_NAME = ?
+                    """
+            # 参数化查询以确保安全
             cursor.execute(query, (table_name,))
             columns = cursor.fetchall()
 
-            t = doc.add_table(rows=len(columns) + 2, cols=5)
+            t = doc.add_table(rows=len(columns) + 2, cols=7)
+            # 遍历表格并应用边框
+            for row in t.rows:
+                for cell in row.cells:
+                    # 为每个单元格分别设置所有四个边框和内部边框
+                    set_cell_border(cell,
+                                    left=border_kwargs,
+                                    right=border_kwargs,
+                                    top=border_kwargs,
+                                    bottom=border_kwargs,
+                                    insideH=border_kwargs,
+                                    insideV=border_kwargs)
+
             t.cell(0, 0).text = '表名'
-            t.cell(0, 1).text = table_name
-            t.cell(0, 2).merge(t.cell(0, 3)).text = '所属数据库'
-            t.cell(0, 4).text = database
+            t.cell(0, 1).merge(t.cell(0, 2)).text = table_name
+            t.cell(0, 3).merge(t.cell(0, 4)).merge(t.cell(0, 5)).text = '所属数据库'
+            t.cell(0, 6).text = database
 
             t.cell(1, 0).text = '序号'
             t.cell(1, 1).text = '字段名'
             t.cell(1, 2).text = '字段类型'
-            t.cell(1, 3).text = '默认值'
-            t.cell(1, 4).text = '备注'
+            t.cell(1, 3).text = '非空'
+            t.cell(1, 4).text = '键'
+            t.cell(1, 5).text = '默认值'
+            t.cell(1, 6).text = '字段说明'
 
             for i, column in enumerate(columns):
                 row = t.rows[i + 2]
@@ -180,14 +254,19 @@ def fetch_table_structure(server, database, username, password, port, table):
                 if column.CHARACTER_MAXIMUM_LENGTH:
                     column_type += f" ({column.CHARACTER_MAXIMUM_LENGTH})"
                 row.cells[2].text = column_type
-                row.cells[3].text = str(column.COLUMN_DEFAULT) if column.COLUMN_DEFAULT else ''
-                row.cells[4].text = column.COLUMN_COMMENT if column.COLUMN_COMMENT else ''
+                IS_NULLABLE = str(column.IS_NULLABLE)
+                row.cells[3].text = '是' if IS_NULLABLE == 'NO' else ''
+                IS_PRIMARY_KEY = str(column.IS_PRIMARY_KEY)
+                row.cells[4].text = '主键' if IS_PRIMARY_KEY == 'Yes' else ''
+                row.cells[5].text = str(column.COLUMN_DEFAULT) if column.COLUMN_DEFAULT else ''
+                row.cells[6].text = column.COLUMN_COMMENT if column.COLUMN_COMMENT else ''
 
         return doc
 
     except Exception as e:
         messagebox.showerror("Error", f"Could not connect to database: {e}")
         return None
+
 
 def convert_to_word():
     # 从输入字段获取数据库连接信息
@@ -208,12 +287,13 @@ def convert_to_word():
 
 def load_db_settings():
     # 检查配置文件是否存在
-    if not os.path.isfile('db_config.json'):
+    if not os.path.isfile('../DocToTable_Config.json'):
         return db_settings
 
     # 加载配置文件
-    with open('db_config.json', 'r') as config_file:
+    with open('../DocToTable_Config.json', 'r') as config_file:
         return json.load(config_file)
+
 
 # 配置文件的数据库设置
 db_settings = load_db_settings()

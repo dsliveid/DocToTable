@@ -5,8 +5,6 @@ from tkinter import filedialog, scrolledtext, messagebox, simpledialog
 
 import pyodbc
 from docx import Document
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
 
 
 def analyze_table(table, table_comment):
@@ -117,42 +115,6 @@ db_settings = {
 }
 
 
-def set_cell_border(cell, **kwargs):
-    """
-    设置单元格边框
-    """
-    tc = cell._tc
-    tcPr = tc.get_or_add_tcPr()
-
-    # 定义要设置的边缘类型
-    edges = ('left', 'right', 'top', 'bottom', 'insideH', 'insideV')
-    for edge in edges:
-        edge_data = kwargs.get(edge, {})
-        if edge_data:
-            # 设置边缘属性
-            tag = 'w:{}'.format(edge)
-            element = OxmlElement(tag)
-            element.set(qn('w:val'), edge_data.get('val', 'single'))
-            element.set(qn('w:sz'), str(edge_data.get('sz', 4)))
-            element.set(qn('w:space'), '0')
-            element.set(qn('w:color'), edge_data.get('color', '000000')) # 边缘设为黑色
-
-            # 添加边缘到单元格的边界定义中
-            tcBorders = tcPr.first_child_found_in('w:tcBorders')
-            if tcBorders is None:
-                tcBorders = OxmlElement('w:tcBorders')
-                tcPr.append(tcBorders)
-            tcBorders.append(element)
-
-
-# 设置表格样式，所有边框都是黑色单线
-border_kwargs = {
-    'sz': 6,  # 边框粗细
-    'val': 'single',  # 边框类型为单线
-    'color': '000000',  # 边框颜色为黑色
-}
-
-
 def fetch_table_structure(server, database, username, password, port, table):
     """连接数据库并获取表结构的函数。"""
     try:
@@ -199,18 +161,6 @@ def fetch_table_structure(server, database, username, password, port, table):
             columns = cursor.fetchall()
 
             t = doc.add_table(rows=len(columns) + 2, cols=5)
-            # 遍历表格并应用边框
-            for row in t.rows:
-                for cell in row.cells:
-                    # 为每个单元格分别设置所有四个边框和内部边框
-                    set_cell_border(cell,
-                        left=border_kwargs,
-                        right=border_kwargs,
-                        top=border_kwargs,
-                        bottom=border_kwargs,
-                        insideH=border_kwargs,
-                        insideV=border_kwargs)
-
             t.cell(0, 0).text = '表名'
             t.cell(0, 1).text = table_name
             t.cell(0, 2).merge(t.cell(0, 3)).text = '所属数据库'
@@ -239,7 +189,6 @@ def fetch_table_structure(server, database, username, password, port, table):
         messagebox.showerror("Error", f"Could not connect to database: {e}")
         return None
 
-
 def convert_to_word():
     # 从输入字段获取数据库连接信息
     server = server_entry.get()
@@ -259,13 +208,12 @@ def convert_to_word():
 
 def load_db_settings():
     # 检查配置文件是否存在
-    if not os.path.isfile('db_config.json'):
+    if not os.path.isfile('../DocToTable_Config.json'):
         return db_settings
 
     # 加载配置文件
-    with open('db_config.json', 'r') as config_file:
+    with open('../DocToTable_Config.json', 'r') as config_file:
         return json.load(config_file)
-
 
 # 配置文件的数据库设置
 db_settings = load_db_settings()

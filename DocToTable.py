@@ -8,10 +8,11 @@ from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
+json_file_name = "DocToTable_Config.json"
+
 
 def analyze_table(table, table_comment):
     table_name = ""
-    db_name = ""
     columns_definitions = []
     newline = ",\n    "
     primary_keys = []
@@ -23,7 +24,6 @@ def analyze_table(table, table_comment):
         # 假定第一行包含列的注释，在第二列
         if i == 0:
             table_name = cells[1]
-            db_name = cells[6]
 
         # 假定列定义从第三行开始
         elif i > 1:
@@ -41,8 +41,6 @@ def analyze_table(table, table_comment):
 
             if is_key == "主键":
                 primary_keys.append(column_name)
-                # 在MySQL中，设置了PRIMARY KEY的列不能被定义为NULL
-                # column_definition = column_definition.replace("NULL", "")
             elif is_key == "外键":
                 # 在此示例中，外键的处理略过了，因为要建立外键，还需要知道外键引用了哪个表和列
                 pass
@@ -53,7 +51,7 @@ def analyze_table(table, table_comment):
     columns_definitions.append(primary_key_definition)
 
     # 组装CREATE TABLE语句
-    table_sql = f"if not exits (select * from sys.sysobjects where name='{table_name}') \nbegin \n"
+    table_sql = f"if not exists (select * from sys.sysobjects where name='{table_name}') \nbegin \n"
     table_sql += f"CREATE TABLE {table_name} (\n    {''.join({newline}).join(col for col in columns_definitions if col)}\n);"
     # table_sql = f"CREATE TABLE {table_name.lower()} ({newline}    {',{newline}    '.join(col for col in columns_definitions if col)}{newline});"
 
@@ -72,18 +70,26 @@ def analyze_table(table, table_comment):
     return table_sql + "\n" + comment_sql + "\n" + "\n".join(column_comments) + "\nend"
 
 
+def get_text_from_elem(elem):
+    text = []
+    for child in elem.iterchildren():
+        if child.tag == qn('w:r'):  # 查找包含文本的r元素
+            for subchild in child.iterchildren():
+                if subchild.tag == qn('w:t'):
+                    t_text = subchild.text
+                    if t_text:
+                        text.append(t_text)
+    return ''.join(text)
+
+
 def get_table_preceding_paragraph(table):
     tbl_element = table._element
     prev_element = tbl_element.getprevious()
 
-    if prev_element is not None and prev_element.tag.endswith('p'):
-        return prev_element.text
-    else:
-        # 找到真正的文本段落
-        while prev_element is not None and not prev_element.tag.endswith('p'):
-            prev_element = prev_element.getprevious()
-        if prev_element is not None:
-            return prev_element.text
+    while prev_element is not None:
+        if prev_element.tag == qn('w:p'):
+            return get_text_from_elem(prev_element)
+        prev_element = prev_element.getprevious()
     return ""  # 如果之前没有段落，则返回空字符串
 
 
@@ -97,6 +103,11 @@ def open_docx():
         sql_output = ""  # Store all the SQL statements here
         for table in doc.tables:
             table_comment = get_table_preceding_paragraph(table)
+            # 截取空格后面的内容，1表示只分割一次
+            split_comment = table_comment.split(' ', 1)
+            if len(split_comment) > 1:
+                table_comment = split_comment[1]
+
             sql_output += analyze_table(table, table_comment) + "\n\n"
 
         text_area.delete('1.0', tk.END)
@@ -163,7 +174,7 @@ def fetch_table_structure(server, database, username, password, port, table):
         query = """
                 SELECT 
                     t.TABLE_NAME,
-                    t.TABLE_TYPE,
+                    CONVERT(varchar(100),row_number() over(order by t.TABLE_NAME)) AS Num,
                     CONVERT(VARCHAR(MAX), ep.value) AS TABLE_COMMENT
                 FROM 
                     INFORMATION_SCHEMA.TABLES t
@@ -183,8 +194,9 @@ def fetch_table_structure(server, database, username, password, port, table):
         tables = cursor.fetchall()
 
         doc = Document()
-        for table_name, table_type, table_comment in tables:
-            doc.add_heading(f"{table_comment}", level=2)  # 表名作为二级标题
+        for table_name, Num, table_comment in tables:
+            table_comment = table_comment if table_comment is not None and len(table_comment) > 0 else table_name
+            doc.add_heading(f"{Num}. {table_comment}", level=2)  # 表名作为二级标题
             query = """
                 SELECT 
                     IC.COLUMN_NAME, 
@@ -268,6 +280,12 @@ def fetch_table_structure(server, database, username, password, port, table):
         return None
 
 
+def update_config_json(new_config):
+    # 写入内容到新文件中
+    with open(json_file_name, 'w', encoding='utf-8') as file:
+        json.dump(new_config, file, ensure_ascii=False, indent=4)
+
+
 def convert_to_word():
     # 从输入字段获取数据库连接信息
     server = server_entry.get()
@@ -276,6 +294,16 @@ def convert_to_word():
     password = password_entry.get()
     port = port_entry.get()
     table = table_entry.get()
+
+    new_config = {
+        'server': server,
+        'database': database,
+        'username': username,
+        'password': password,
+        'port': port,
+        'table': table
+    }
+    update_config_json(new_config)
 
     doc = fetch_table_structure(server, database, username, password, port, table)
     if doc:
@@ -287,11 +315,11 @@ def convert_to_word():
 
 def load_db_settings():
     # 检查配置文件是否存在
-    if not os.path.isfile('db_config.json'):
+    if not os.path.isfile(json_file_name):
         return db_settings
 
     # 加载配置文件
-    with open('db_config.json', 'r') as config_file:
+    with open(json_file_name, 'r') as config_file:
         return json.load(config_file)
 
 
@@ -339,13 +367,13 @@ table_entry = tk.Entry(root)
 table_entry.pack()
 table_entry.insert(0, db_settings['table'])
 
+open_db_button = tk.Button(root, text="数据库表结构保存为Word文档", command=convert_to_word)
+open_db_button.pack(side=tk.TOP, pady=10)
+
 text_area = scrolledtext.ScrolledText(root, wrap=tk.WORD)
 text_area.pack(side=tk.TOP, pady=10)
 
-open_button = tk.Button(root, text="打开Word文档", command=open_docx)
+open_button = tk.Button(root, text="Word文档转表结构脚本", command=open_docx)
 open_button.pack(side=tk.TOP, pady=10)
-
-open_db_button = tk.Button(root, text="表结构转Word文档", command=convert_to_word)
-open_db_button.pack(side=tk.TOP, pady=10)
 
 root.mainloop()
