@@ -259,11 +259,11 @@ def convert_to_word():
 
 def load_db_settings():
     # 检查配置文件是否存在
-    if not os.path.isfile('../DocToTable_Config.json'):
+    if not os.path.isfile('../DocToTable_Config_mysql.json'):
         return db_settings
 
     # 加载配置文件
-    with open('../DocToTable_Config.json', 'r') as config_file:
+    with open('../DocToTable_Config_mysql.json', 'r') as config_file:
         return json.load(config_file)
 
 

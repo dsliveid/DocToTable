@@ -1,0 +1,9 @@
+{
+    "dbType": "mysql",
+    "server": "192.168.224.232",
+    "database": "testdb",
+    "username": "root",
+    "password": "root",
+    "port": "3306",
+    "table": "field_manage"
+}

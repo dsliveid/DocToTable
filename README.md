@@ -24,6 +24,8 @@ pip install Pillow
 
 pip install tqdm
 
+pip install pymysql
+
 
 ### 打包命令
 pyinstaller --onefile .\DocToTable.py
