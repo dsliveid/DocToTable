@@ -1,0 +1,9 @@
+{
+    "dbType": "sqlserver",
+    "server": "192.168.200.66",
+    "database": "YXZJS2",
+    "username": "sa",
+    "password": "123qwe,.",
+    "port": "1639",
+    "table": "TBZJ_ZD_ZJXX"
+}
