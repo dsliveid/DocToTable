@@ -692,7 +692,7 @@ open_db_button = tk.Button(root, text="数据库表结构保存为Word文档",
                            command=lambda: open_progressbar_window(convert_to_word))
 open_db_button.pack(side=tk.TOP, pady=10)
 
-text_area = scrolledtext.ScrolledText(root, wrap=tk.WORD)
+text_area = scrolledtext.ScrolledText(root, wrap=tk.WORD, height=15)
 text_area.pack(side=tk.TOP, pady=10)
 
 open_button = tk.Button(root, text="Word文档转表结构脚本", command=open_docx)
